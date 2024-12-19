@@ -254,6 +254,15 @@ def convert_jd_to_json(jd_text):
     # Debugging: Print the raw response content
     raw_content = response.choices[0].message.content
     # Parse the response to ensure it's valid JSON
+    # Sanitize the response
+    if raw_content.startswith("```json") and raw_content.endswith("```"):
+        # Remove the ```json and ``` markers
+        raw_content = raw_content[8:-3].strip()
+    elif raw_content.startswith("```") and raw_content.endswith("```"):
+        # Remove the ``` markers if they are present
+        raw_content = raw_content[3:-3].strip()
+
+    # Parse the response to ensure it's valid JSON
     try:
         result = json.loads(raw_content)
     except json.JSONDecodeError:
