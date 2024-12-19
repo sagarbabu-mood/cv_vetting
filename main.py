@@ -22,32 +22,17 @@ client = AzureOpenAI(
 # Authenticate and initialize the Google API clients
 
 def authenticate_google_api():
-    credentials_path = "precise-passkey-441905-t2-5e8a96b58501.json"  # Update with your actual file path
-
     try:
-        # Validate the file path
-        with open(credentials_path, "r") as f:
-            credentials_data = json.load(f)
-
-        # Authenticate using the service account file
-        credentials = service_account.Credentials.from_service_account_file(
+        credentials_data = json.loads(st.secrets["google_api"]["credentials"])
+        credentials = service_account.Credentials.from_service_account_info(
             credentials_data,
             scopes=["https://www.googleapis.com/auth/drive", "https://www.googleapis.com/auth/documents"]
         )
-
-        # Initialize Google API clients
         drive_service = build("drive", "v3", credentials=credentials)
         docs_service = build("docs", "v1", credentials=credentials)
-
         return drive_service, docs_service
-    except FileNotFoundError:
-        st.error(f"Credentials file not found at {credentials_path}. Ensure the file exists.")
-        raise
-    except json.JSONDecodeError as e:
-        st.error(f"Error decoding JSON in the credentials file: {e}")
-        raise
     except Exception as e:
-        st.error(f"Failed to authenticate Google API. Error: {e}")
+        st.error(f"Failed to authenticate Google API: {e}")
         raise
 
 # Function to extract text from uploaded PDF
