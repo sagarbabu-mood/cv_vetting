@@ -23,9 +23,9 @@ client = AzureOpenAI(
 
 
 def authenticate_google_api():
-    credentials_info = json.loads(st.secrets["google_api"]["credentials"])
+    credentials_path = "credentials.json"
     credentials = service_account.Credentials.from_service_account_info(
-        credentials_info, scopes=[
+        credentials_path, scopes=[
             "https://www.googleapis.com/auth/drive", "https://www.googleapis.com/auth/documents"]
     )
     drive_service = build("drive", "v3", credentials=credentials)
