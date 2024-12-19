@@ -24,7 +24,7 @@ client = AzureOpenAI(
 
 def authenticate_google_api():
     credentials_path = "precise-passkey-441905-t2-5e8a96b58501.json"
-    credentials = service_account.Credentials.from_service_account_file(
+    credentials = service_account.Credentials.from_service_account_info(
         credentials_path, scopes=[
             "https://www.googleapis.com/auth/drive", "https://www.googleapis.com/auth/documents"]
     )
