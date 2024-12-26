@@ -6,9 +6,14 @@ import pandas as pd
 import requests
 from io import BytesIO
 import io
+import re
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 from google.oauth2 import service_account
+from docx import Document  # Import for DOCX processing
+from googleapiclient.errors import HttpError
+import textract
+import pytesseract
 
 api_key = st.secrets["azure_openai"]["api_key"]
 azure_endpoint = st.secrets["azure_openai"]["azure_endpoint"]
@@ -22,21 +27,16 @@ client = AzureOpenAI(
 # Authenticate and initialize the Google API clients
 
 def authenticate_google_api():
-    try:
-        credentials_data = json.loads(st.secrets["google_api"]["credentials"])
-        credentials = service_account.Credentials.from_service_account_info(
-            credentials_data,
-            scopes=["https://www.googleapis.com/auth/drive", "https://www.googleapis.com/auth/documents"]
-        )
-        drive_service = build("drive", "v3", credentials=credentials)
-        docs_service = build("docs", "v1", credentials=credentials)
-        return drive_service, docs_service
-    except Exception as e:
-        st.error(f"Failed to authenticate Google API: {e}")
-        raise
+    credentials_info = json.loads(st.secrets["google_api"]["credentials"])
+    credentials = service_account.Credentials.from_service_account_info(
+        credentials_info, scopes=[
+            "https://www.googleapis.com/auth/drive.readonly", "https://www.googleapis.com/auth/documents.readonly"]
+    )
+    drive_service = build("drive", "v3", credentials=credentials)
+    docs_service = build("docs", "v1", credentials=credentials)
+    return drive_service, docs_service
 
 # Function to extract text from uploaded PDF
-
 
 def extract_text_from_pdf(pdf_file):
     reader = PdfReader(pdf_file)
@@ -44,7 +44,6 @@ def extract_text_from_pdf(pdf_file):
     return text
 
 # Extract text from Google Drive files
-
 
 def extract_text_from_google_drive(drive_service, file_id):
     request = drive_service.files().get_media(fileId=file_id)
@@ -55,43 +54,221 @@ def extract_text_from_google_drive(drive_service, file_id):
         status, done = downloader.next_chunk()
     file_stream.seek(0)
 
+    # Debugging: Check the size of the downloaded file
+    print("Downloaded file size:", file_stream.getbuffer().nbytes)
+
     # Handle PDF and DOCX formats
     return extract_text_from_pdf(file_stream)
 
 # Extract text from Google Docs
 
+def extract_text_from_docx(docx_file):
+    try:
+        document = Document(docx_file)
+        text = "\n".join([para.text for para in document.paragraphs])
+        return text
+    except Exception as e:
+        raise ValueError(f"Failed to extract text from DOCX: {e}")
 
-def extract_text_from_google_docs(docs_service, document_id):
-    doc = docs_service.documents().get(documentId=document_id).execute()
-    content = []
-    for element in doc.get("body").get("content", []):
-        if "paragraph" in element:
-            for text_run in element["paragraph"]["elements"]:
-                content.append(text_run.get("textRun", {}).get("content", ""))
-    return "".join(content)
+def extract_text_from_doc(doc_file):
+    try:
+        text = textract.process(doc_file, extension='doc').decode('utf-8')
+        return text
+    except Exception as e:
+        raise ValueError(f"Failed to extract text from DOC file: {e}")
 
-# Convert URLs to downloadable format or detect file type
+def extract_text_from_image(file_stream):
+    try:
+        image = Image.open(file_stream)
+        text = pytesseract.image_to_string(image)
+        return text
+    except Exception as e:
+        raise ValueError(f"Failed to perform OCR on the image: {e}")
 
+def extract_file_id(url):
+    """
+    Extracts the file ID from a Google Docs URL using regex.
+    """
+    pattern = r"/d/([a-zA-Z0-9_-]+)"
+    match = re.search(pattern, url)
+    if match:
+        return match.group(1)
+    else:
+        raise ValueError("Could not extract file ID from URL.")
 
-def process_url(url, drive_service, docs_service):
-    if "drive.google.com" in url:
+def process_url(url, drive_service=None, docs_service=None):
+    # Handle Google Docs URLs
+    if "docs.google.com/document/d/" in url:
+        # Extract the file ID from the URL using regex
+        try:
+            file_id = extract_file_id(url)
+        except ValueError as ve:
+            raise ValueError(f"Invalid Google Docs URL format: {ve}")
+        
+        # Fetch the file metadata
+        try:
+            file_metadata = drive_service.files().get(fileId=file_id, fields="mimeType").execute()
+            mime_type = file_metadata.get("mimeType")
+            print(f"File ID: {file_id}, MIME Type: {mime_type}")  # Debugging line
+        except Exception as e:
+            raise ValueError(f"Failed to retrieve file metadata: {e}")
+        
+        if mime_type == "application/vnd.google-apps.document":
+            # Native Google Docs file; export as DOCX
+            try:
+                request = drive_service.files().export_media(
+                    fileId=file_id,
+                    mimeType="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                )
+                file_stream = io.BytesIO()
+                downloader = MediaIoBaseDownload(file_stream, request)
+                done = False
+                while not done:
+                    status, done = downloader.next_chunk()
+                    print(f"Download progress: {int(status.progress() * 100)}%")  # Debugging line
+                file_stream.seek(0)
+                print(f"Downloaded DOCX size: {len(file_stream.getvalue())} bytes")  # Debugging line
+                return extract_text_from_docx(file_stream)
+            except HttpError as e:
+                raise ValueError(f"Failed to export Google Doc as DOCX: {e}")
+        
+        elif mime_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+            # Already a DOCX file; download directly
+            try:
+                request = drive_service.files().get_media(fileId=file_id)
+                file_stream = io.BytesIO()
+                downloader = MediaIoBaseDownload(file_stream, request)
+                done = False
+                while not done:
+                    status, done = downloader.next_chunk()
+                    print(f"Download progress: {int(status.progress() * 100)}%")  # Debugging line
+                file_stream.seek(0)
+                print(f"Downloaded DOCX size: {len(file_stream.getvalue())} bytes")  # Debugging line
+                return extract_text_from_docx(file_stream)
+            except HttpError as e:
+                raise ValueError(f"Failed to download DOCX from Google Drive: {e}")
+        
+        elif mime_type == "application/msword":
+            # DOC file; download directly and extract text using textract
+            try:
+                request = drive_service.files().get_media(fileId=file_id)
+                file_stream = io.BytesIO()
+                downloader = MediaIoBaseDownload(file_stream, request)
+                done = False
+                while not done:
+                    status, done = downloader.next_chunk()
+                    print(f"Download progress: {int(status.progress() * 100)}%")  # Debugging line
+                file_stream.seek(0)
+                print(f"Downloaded DOC size: {len(file_stream.getvalue())} bytes")  # Debugging line
+                return extract_text_from_doc(file_stream)
+            except HttpError as e:
+                raise ValueError(f"Failed to download DOC file from Google Drive: {e}")
+        
+        else:
+            raise ValueError(f"Unsupported MIME type: {mime_type}. Only Google Docs files, DOCX, and DOC files can be processed.")
+    
+    # Handle other Google Drive URLs
+    elif "drive.google.com" in url:
         if "open?id=" in url:
             file_id = url.split("id=")[-1].split("&")[0]
         elif "/file/d/" in url:
             file_id = url.split("/d/")[1].split("/")[0]
         else:
             raise ValueError("Invalid Google Drive URL format.")
-        return extract_text_from_google_drive(drive_service, file_id)
-    elif "docs.google.com" in url:
-        document_id = url.split("/d/")[1].split("/")[0]
-        return extract_text_from_google_docs(docs_service, document_id)
+        
+        # Fetch the file metadata
+        try:
+            file_metadata = drive_service.files().get(fileId=file_id, fields="mimeType").execute()
+            mime_type = file_metadata.get("mimeType")
+            print(f"File ID: {file_id}, MIME Type: {mime_type}")  # Debugging line
+        except Exception as e:
+            raise ValueError(f"Failed to retrieve file metadata: {e}")
+        
+        file_stream = io.BytesIO()
+        if mime_type == "application/pdf":
+            try:
+                request = drive_service.files().get_media(fileId=file_id)
+                downloader = MediaIoBaseDownload(file_stream, request)
+                done = False
+                while not done:
+                    status, done = downloader.next_chunk()
+                    print(f"Download progress: {int(status.progress() * 100)}%")  # Debugging line
+                file_stream.seek(0)
+                print(f"Downloaded PDF size: {len(file_stream.getvalue())} bytes")  # Debugging line
+                return extract_text_from_pdf(file_stream)
+            except HttpError as e:
+                raise ValueError(f"Failed to download PDF from Google Drive: {e}")
+        elif mime_type == "application/vnd.google-apps.document":
+            # Native Google Docs file; export as DOCX
+            try:
+                request = drive_service.files().export_media(
+                    fileId=file_id,
+                    mimeType="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                )
+                file_stream = io.BytesIO()
+                downloader = MediaIoBaseDownload(file_stream, request)
+                done = False
+                while not done:
+                    status, done = downloader.next_chunk()
+                    print(f"Download progress: {int(status.progress() * 100)}%")  # Debugging line
+                file_stream.seek(0)
+                print(f"Downloaded DOCX size: {len(file_stream.getvalue())} bytes")  # Debugging line
+                return extract_text_from_docx(file_stream)
+            except HttpError as e:
+                raise ValueError(f"Failed to export Google Doc as DOCX: {e}")
+        elif mime_type in ["application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/msword"]:
+            # Handle DOCX and DOC files
+            try:
+                request = drive_service.files().get_media(fileId=file_id)
+                downloader = MediaIoBaseDownload(file_stream, request)
+                done = False
+                while not done:
+                    status, done = downloader.next_chunk()
+                    print(f"Download progress: {int(status.progress() * 100)}%")  # Debugging line
+                file_stream.seek(0)
+                file_size = len(file_stream.getvalue())
+                print(f"Downloaded {'DOCX' if mime_type == 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' else 'DOC'} size: {file_size} bytes")  # Debugging line
+
+                if mime_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+                    return extract_text_from_docx(file_stream)
+                elif mime_type == "application/msword":
+                    return extract_text_from_doc(file_stream)
+            except HttpError as e:
+                raise ValueError(f"Failed to download DOC/DOCX file from Google Drive: {e}")
+            except Exception as e:
+                raise ValueError(f"Unexpected error processing DOC/DOCX file: {e}")
+
+        else:
+            raise ValueError(f"Unsupported MIME type: {mime_type}. Only PDFs, Google Docs, DOCX, and DOC files can be processed.")
+    
+    # Handle direct PDF URLs
     elif url.endswith(".pdf"):
-        response = requests.get(url)
-        pdf_file = BytesIO(response.content)
-        return extract_text_from_pdf(pdf_file)
+        try:
+            response = requests.get(url)
+            if response.status_code != 200:
+                raise ValueError(f"Failed to download PDF from URL: {url}")
+            pdf_file = BytesIO(response.content)
+            print(f"Downloaded PDF size: {len(pdf_file.getvalue())} bytes")  # Debugging line
+            return extract_text_from_pdf(pdf_file)
+        except Exception as e:
+            raise ValueError(f"Failed to download PDF from URL: {e}")
+    
+        # Handle direct Image URLs
+    
+    elif url.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.bmp', '.tiff', '.tif')):
+        try:
+            response = requests.get(url)
+            if response.status_code != 200:
+                raise ValueError(f"Failed to download image from URL: {url}")
+            image_file = BytesIO(response.content)
+            print(f"Downloaded Image size: {len(image_file.getvalue())} bytes")  # Debugging line
+            return extract_text_from_image(image_file)
+        except Exception as e:
+            raise ValueError(f"Failed to process image from URL: {e}")
+
+
     else:
         raise ValueError("Unsupported URL format or file type.")
-
 
 def json_to_table(json_result, resume_link, column_order):
     # Initialize row with placeholders for all columns
@@ -123,109 +300,139 @@ def json_to_table(json_result, resume_link, column_order):
 
 # AI-based evaluation function
 
-
 def evaluate_with_ai(resume_text, job_description):
     print(job_description)  # Debugging line
+    
     prompt = f"""
     You are tasked with evaluating how compatible a job candidate is with a specific job description by comparing their resume to the outlined criteria. 
     Here are the details:
 
-    Job Description:
+    **Job Description:**  
     {job_description}
 
-    Candidate Resume:
+    **Candidate Resume:**  
     {resume_text}
 
-    STRICTLY FOLLOW THE INSTRUCTIONS BELOW:
-    Instructions:
-    - Evaluate based on the information provided in the resume.
-    - If the job description asks for 'Age' evaluation:
-        1. Check if the age is directly mentioned in the resume.
-        2. If the Date of Birth (DOB) is not mentioned, calculate it from the year of graduation.
-        3. If those two are not mentioned, calculate it from the starting year of the career.
-        4. If none of these are available, consider as 0.
-    - If the job description does not ask for age evaluation, ignore this criterion.
+    ### STRICTLY FOLLOW THESE INSTRUCTIONS:
+    1) Evaluate based on the details explicitly mentioned in the resume. Do not assume information.
+    2) Handle the following conditions strictly:
+      1. **Must Have:** If explicitly mentioned as `NA`, skip evaluating this condition.
+      2. **Broader Context:** Use this as reference if available to infer details from the resume.
+    3) If the job description asks for `Age` evaluation:
+        1. Check if age is mentioned in the resume.
+        2. If DOB is not mentioned, infer age from graduation year.
+        3. If no age-related details are found, return as `0`.
+    4) If the job description asks for `Native Language` evaluation:
+        1. Check if the language is explicitly mentioned in the resume.
+        2. If not mentioned, infer based on candidate's work or native location.
+        3. If details are missing, return as `0`.
+    5) If the candidate worked under multiple roles in the same company, combine the duration for all roles.
+    6) If the job description asks for Designation:
+        **Designation-Specific Instructions**:
+        1. You must find an **exact** or **explicit** match for the required designation. For example, if the job requires “Manager,” the resume must explicitly mention “Manager,” “Managerial,” or a clearly equivalent title.
+        2. Do NOT assume that sales-related or counseling roles (e.g., Sales Executive, Academic Counselor, Business Development Associate) are automatically managerial unless the resume explicitly states managerial responsibilities or title.
+        3. If the role was an internship and the job description specifically requires a full-time position, do NOT consider an internship as fulfilling that requirement.
+        4. If a required designation is not stated in the resume, return `"value": 0` with remarks explaining why (e.g., “No exact managerial title mentioned.”).
 
-    - If the job description asks for 'Native Language' evaluation:
-      1. Check if the language is explicitly mentioned in the resume.
-      2. If it is not mentioned, infer the language based on candidate work locations or native location.
-      3. If none of these are available, consider as 0.
-    - If the job description does not ask for 'Native Language', skip this evaluation.
+    - While calculating the experience, Parse dates in **any standard date format**, including but not limited to:
+        - DD/MM/YYYY
+        - MM/DD/YYYY
+        - YYYY-MM-DD
 
-    - Do not assume the existence of documentation or certificates unless explicitly mentioned in the resume.
-    - If the candidate has worked in the same company under multiple roles (e.g., a promotion), consider the combined duration for all roles at that company.
-    - Identify if the candidate meets the required total tenure by summing the time spent across all roles within the same organization.
-    - For each condition in the job description, evaluate the `condition(s)` provided for each criterion and provide the following:
-      - "value": 1 if the condition is met, otherwise 0.
-      - "remarks": A brief explanation of why the condition is either met or not met.
-    - Do not provide separate responses for individual conditions.
-    - 
+    7) If the job description asks for Work Experience:
+        **Work Experience Calculation** (if relevant):
+        1. Parse each **full-time** role’s start and end dates (ignore internships, training programs, or WILP unless the job description explicitly allows them).
+        2. If an end date is “Present” or “Till date,” calculate experience through today (or note an approximate ongoing duration).
+        3. Sum these durations across all **full-time roles only**.
+        4. Compare the candidate's total full-time experience with the requirement from the job description:
+        5. Do NOT double-count overlapping dates and do NOT consider internship periods, training programs, or WILP as full-time experience (unless the job description explicitly allows it).
+        6. If the candidate’s experience includes internships, WILP, or training, explicitly state in the `"remarks"` why these are excluded from full-time experience.
+            - Parse dates in **any valid date format**.
+            - Handle overlapping dates carefully:
+            - If roles overlap, **only count the non-overlapping period**.
+            - For partial dates (e.g., MM/YYYY), assume the **1st day of the month**.
+            - For single years (e.g., YYYY), assume **January 1st**.
+            - Include **all valid full-time durations** explicitly in the `"remarks"` with their parsed start and end dates.
+            - If a role is excluded (e.g., internship, training), clearly mention the **reason for exclusion** in `"remarks"`.
+            - Ensure each date range is **added sequentially** and non-overlapping durations are **not ignored**.
+            - If experience appears short, explicitly list **parsed durations per role** and how the total was calculated.
 
-    Example Output:
-    {{
-        "condition1": {{
-            "value": 1 or 0,
-            "remarks": "reason for why shortlisting or reason for why not shortlisting"
-        }},
-        "condition2": {{
-            "value": 1 or 0,
-            "remarks": "reason for why shortlisting or reason for why not shortlisting"
-        }},
-    }}
+    8) If the job description specifies a particular industry and a specific designation (e.g., "1+ year of BDM or Managerial experience in Edtech"):
+    - Confirm the candidate has a **full-time** role in that industry (Edtech) for at least the stated duration (1+ year).
+    - Ensure the exact designation (e.g., BDM, Manager, Team Lead) is clearly stated in the resume. 
+        - "Senior BDA" alone does not count as managerial unless explicitly stated (e.g., “led a team”).
+    - If the candidate meets these conditions, set "value": 1 with a brief reason. Otherwise, set "value": 0 and note the shortfall (e.g., “Not managerial,” “Less than 1 year,” “Not Edtech,” etc.).
 
-    Example Output with values:
+    - Evaluate each criterion (`Must Have`, `Broader Context`) with:
+        - `"value"`: `1` if condition is met, otherwise `0`.
+        - `"remarks"`: Brief explanation of why the condition was or was not met.
+
+    ### JSON Output Format Example:
     {{
         "age": {{
             "value": 1,
-            "remarks": "Candidate is under 30, calculated based on year of birth from resume."
+            "remarks": "Candidate meets the age criteria mentioned in the job description."
         }},
         "native_language": {{
-            "value": 1,
-            "remarks": "Marathi is mentioned as a known language in the resume."
+            "value": 0,
+            "remarks": "Language not explicitly mentioned in resume."
         }},
+        "experience": {{
+            "value": 1,
+            "remarks": "Candidate has sufficient experience in relevant domain."
+        }}
     }}
 
-    condition1 & condition2 can be replaced with the actual condition names.
+    - If a condition is marked as `Must Have: NA`:
+        1. Check if a `Broader Context for Prompt Criteria` exists.
+        2. If Broader Context exists, evaluate the candidate based on that.
+            - If the condition is met, set `"value": 1` and provide appropriate remarks.
+            - If not met, set `"value": 0` and explain why.
 
     Return the results strictly in the above JSON format without any additional text or explanations.
     """
+    
     messages = [{"role": "system", "content": prompt}]
-
+    
+    # API Call
     response = client.chat.completions.create(
-        model="gpt-4o",  # Replace with the deployment name in Azure
+        model="gpt-4o",  # Replace with the correct model
         messages=messages
     )
-
+    
     # Debugging: Print the raw response content
-    # Strip whitespace
     raw_content = response.choices[0].message.content.strip()
-
-    # Debugging: Print the raw content for inspection
     print("Raw response content:", raw_content)  # Debugging line
-
+    
     # Sanitize the response
     if raw_content.startswith("```json") and raw_content.endswith("```"):
-        # Remove the ```json and ``` markers
         raw_content = raw_content[8:-3].strip()
     elif raw_content.startswith("```") and raw_content.endswith("```"):
-        # Remove the ``` markers if they are present
         raw_content = raw_content[3:-3].strip()
-
-    # Parse the response to ensure it's valid JSON
+    
+    # Parse JSON Response
     try:
         result = json.loads(raw_content)
     except json.JSONDecodeError:
         raise ValueError(
-            f"The response is not valid JSON. Raw content: {raw_content}")
-
+            f"The response is not valid JSON. Raw content: {raw_content}"
+        )
+    
+    # Debugging: Print parsed JSON result
+    print("Parsed Response:", result)
+    
     return result
-
 
 def convert_jd_to_json(jd_text):
     prompt = f"""
     You are tasked with converting a job description into a structured JSON format. Each parameter in the job description should be represented with:
     - `criteria`: A concise summary of the requirement.
-    - `condition(s)`: Detailed steps or logic to evaluate the criteria.
+    - `must_have`: The mandatory conditions or requirements (if it's not mandatory, return `NA`).
+    - `broader_context`: Detailed steps or logic to evaluate the criteria.
+
+    **Important Notes:**
+    - If `Must Have` is mentioned as `NA`, include `"must_have": "NA"` in the JSON output.
+    - If `Broader Context` is not specified, return `"broader_context": "NA"`.
 
     Job Description:
     {jd_text}
@@ -234,43 +441,44 @@ def convert_jd_to_json(jd_text):
     {{
         "age": {{
             "criteria": "Age should be less than 30 (consider 31 if other parameters match).",
-            "condition(s)": "1. Candidate will mention in Resume\n2. If DOB is not mentioned, calculate from year of graduation\n3. If those two are not mentioned, calculate from starting year of career\n4. Else give as missing"
+            "must_have": "Age <30. If rest of the parameters match, we can consider 31.",
+            "broader_context": "1. Candidate will mention in Resume\n2. If DOB is not mentioned, calculate from the year of graduation\n3. If those two are not mentioned, calculate from the starting year of career\n4. Else give as 0"
         }},
         "native_language": {{
             "criteria": "Native Language or Known Language: Marathi",
-            "condition(s)": "1. Candidate will mention in Resume\n2. If not mentioned, infer based on candidate work locations or native location\n3. Else give as missing"
+            "must_have": "Must explicitly mention Marathi in resume.",
+            "broader_context": "1. Candidate will mention in Resume\n2. If not mentioned, infer based on candidate work locations or native location\n3. Else give as missing"
         }}
     }}
 
     Return the results strictly in the above JSON format without any additional text or explanations.
     """
+    
     messages = [{"role": "system", "content": prompt}]
-
+    
     response = client.chat.completions.create(
         model="gpt-4o",  # Replace with the deployment name in Azure
         messages=messages
     )
-
+    
     # Debugging: Print the raw response content
-    raw_content = response.choices[0].message.content
-    # Parse the response to ensure it's valid JSON
+    raw_content = response.choices[0].message.content.strip()
+    
     # Sanitize the response
     if raw_content.startswith("```json") and raw_content.endswith("```"):
-        # Remove the ```json and ``` markers
         raw_content = raw_content[8:-3].strip()
     elif raw_content.startswith("```") and raw_content.endswith("```"):
-        # Remove the ``` markers if they are present
         raw_content = raw_content[3:-3].strip()
-
+    
     # Parse the response to ensure it's valid JSON
     try:
         result = json.loads(raw_content)
     except json.JSONDecodeError:
         raise ValueError(
-            f"The response is not valid JSON. Raw content: {raw_content}")
-
+            f"The response is not valid JSON. Raw content: {raw_content}"
+        )
+    
     return result
-
 
 jd_json = None
 
@@ -318,45 +526,69 @@ if st.button("Process Resumes"):
             # Read CSV file
             df = pd.read_csv(csv_file)
             if "Resume Links" not in df.columns:
-                st.error(
-                    "The uploaded CSV file must have a column named 'Resume Links'.")
+                st.error("The uploaded CSV file must have a column named 'Resume Links'.")
             else:
                 results = []
+                unsupported_resumes = []  # List to collect unsupported MIME type resumes
                 total_resumes = len(df)  # Total number of resumes to process
                 progress_bar = st.progress(0)  # Initialize progress bar
                 progress_text = st.empty()  # Placeholder for progress text
 
                 for index, row in df.iterrows():
                     resume_url = row["Resume Links"]
-                    resume_text = process_url(
-                        resume_url, drive_service, docs_service)
-                    result = evaluate_with_ai(resume_text, jd_json)
+                    try:
+                        resume_text = process_url(resume_url, drive_service, docs_service)
+                        result = evaluate_with_ai(resume_text, jd_json)
 
-                    # Extract keys from the first response as column_order
-                    if column_order is None:
-                        column_order = list(result.keys())
+                        # Extract keys from the first response as column_order
+                        if column_order is None:
+                            column_order = list(result.keys())
 
-                    # Standardize the result to match column_order
-                    result_table = json_to_table(
-                        result, resume_url, column_order)
-                    results.append(result_table)
-
+                        # Standardize the result to match column_order
+                        result_table = json_to_table(result, resume_url, column_order)
+                        results.append(result_table)
+                    except ValueError as resume_e:
+                        error_message = str(resume_e)
+                        if "Unsupported MIME type" in error_message:
+                            unsupported_resumes.append({
+                                "Resume Link/Text": resume_url,
+                                "Reason": error_message
+                            })
+                        else:
+                            # Handle other errors (e.g., download failures)
+                            unsupported_resumes.append({
+                                "Resume Link/Text": resume_url,
+                                "Reason": f"Processing error: {error_message}"
+                            })
+                    
                     # Update progress bar and text
-                    # Calculate progress
-                    progress = (index + 1) / total_resumes
+                    progress = (index + 1) / total_resumes  # Calculate progress
                     progress_bar.progress(progress)  # Update progress bar
-                    # Update progress text
-                    progress_text.text(
-                        f"Processing: {index + 1}/{total_resumes}...")
+                    progress_text.text(f"Processing: {index + 1}/{total_resumes}...")  # Update progress text
 
                 # Combine all results into one DataFrame
-                final_results = pd.concat(results, ignore_index=True)
+                if results:
+                    final_results = pd.concat(results, ignore_index=True)
+                    # Display the result in table format
+                    st.header("Evaluation Results")
+                    st.dataframe(final_results)
+                else:
+                    st.warning("No resumes were successfully processed.")
 
-                # Display the result in table format
-                st.header("Evaluation Results")
-                st.dataframe(final_results)
+                # Display unsupported resumes if any
+                if unsupported_resumes:
+                    st.header("Unsupported Resumes")
+                    unsupported_df = pd.DataFrame(unsupported_resumes)
+                    st.dataframe(unsupported_df)
+
+                # After processing resumes
+                processed_count = len(results)
+                unsupported_count = len(unsupported_resumes)
+
+                st.subheader(f"Processed Resumes: {processed_count}")
+                st.subheader(f"Unsupported Resumes: {unsupported_count}")
+
         except Exception as e:
             st.error(f"An error occurred: {e}")
     else:
-        st.error(
-            "Please upload a CSV file, provide a valid job description, and convert it to JSON.")
+        st.error("Please upload a CSV file, provide a valid job description, and convert it to JSON.")
