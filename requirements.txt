@@ -1,7 +1,9 @@
 streamlit
 PyPDF2
 openai
-pandas
+pandas>=2.0.0
+python-dateutil>=2.8.2
+six>=1.16.0
 google-api-python-client
 google-auth
 google-auth-httplib2
