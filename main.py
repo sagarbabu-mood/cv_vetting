@@ -484,7 +484,7 @@ jd_json = None
 
 # Streamlit app
 st.title("AI-Powered Resume Evaluator for Multiple Document Types")
-st.write("Upload a CSV file containing URLs of resumes (Drive, Docs, PDFs) and provide the job description to evaluate multiple candidates.")
+st.write("Upload a CSV file containing URLs of resumes (Drive, Docs, PDFs, PNGs) and provide the job description to evaluate multiple candidates. The column name should be **Resume Links.** ")
 
 # Job description input
 st.header("Step 1: Provide Job Description")
