@@ -18,7 +18,7 @@ from PIL import Image  # Add this import at the top
 import os
 
 # Add Tesseract to PATH for Windows
-pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'  # Adjust path if needed
+# pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'  # Adjust path if needed
 
 api_key = st.secrets["azure_openai"]["api_key"]
 azure_endpoint = st.secrets["azure_openai"]["azure_endpoint"]
