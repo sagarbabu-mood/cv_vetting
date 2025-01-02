@@ -18,7 +18,7 @@ from PIL import Image  # Add this import at the top
 import os
 
 # Add Tesseract to PATH for Windows
-# pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'  # Adjust path if needed
+pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'  # Adjust path if needed
 
 api_key = st.secrets["azure_openai"]["api_key"]
 azure_endpoint = st.secrets["azure_openai"]["azure_endpoint"]
@@ -352,7 +352,7 @@ def evaluate_with_ai(resume_text, job_description):
         1. You must find an **exact** or **explicit** match for the required designation. For example, if the job requires “Manager,” the resume must explicitly mention “Manager,” “Managerial,” or a clearly equivalent title.
         2. Do NOT assume that sales-related or counseling roles (e.g., Sales Executive, Academic Counselor, Business Development Associate) are automatically managerial unless the resume explicitly states managerial responsibilities or title.
         3. If the role was an internship and the job description specifically requires a full-time position, do NOT consider an internship as fulfilling that requirement.
-        4. If a required designation is not stated in the resume, return `"value": 0` with remarks explaining why (e.g., “No exact managerial title mentioned.”).
+        4. If a required designation is not stated in the resume, return `"value": 0` with remarks explaining why (e.g., “No exact managerial title mentioned. and mention what other designations the candidate have”).
 
     - While calculating the experience, Parse dates in **any standard date format**, including but not limited to:
         - DD/MM/YYYY
@@ -385,7 +385,7 @@ def evaluate_with_ai(resume_text, job_description):
 
     - Evaluate each criterion (`Must Have`, `Broader Context`) with:
         - `"value"`: `1` if condition is met, otherwise `0`.
-        - `"remarks"`: Brief explanation of why the condition was or was not met.
+        - `"remarks"`: A brief explanation of why the condition was or was not met. If the condition is not met, provide relevant keyword information about the parameter the candidate possesses.
 
     ### JSON Output Format Example:
     {{
@@ -407,7 +407,7 @@ def evaluate_with_ai(resume_text, job_description):
         1. Check if a `Broader Context for Prompt Criteria` exists.
         2. If Broader Context exists, evaluate the candidate based on that.
             - If the condition is met, set `"value": 1` and provide appropriate remarks.
-            - If not met, set `"value": 0` and explain why.
+            - If not met, set `"value": 0` and explain why. Also, provide relevant keyword information about the parameter the candidate possesses.
 
     Return the results strictly in the above JSON format without any additional text or explanations.
     """
