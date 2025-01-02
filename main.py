@@ -14,6 +14,11 @@ from docx import Document  # Import for DOCX processing
 from googleapiclient.errors import HttpError
 import textract
 import pytesseract
+from PIL import Image  # Add this import at the top
+import os
+
+# Add Tesseract to PATH for Windows
+pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'  # Adjust path if needed
 
 api_key = st.secrets["azure_openai"]["api_key"]
 azure_endpoint = st.secrets["azure_openai"]["azure_endpoint"]
@@ -185,6 +190,21 @@ def process_url(url, drive_service=None, docs_service=None):
             raise ValueError(f"Failed to retrieve file metadata: {e}")
         
         file_stream = io.BytesIO()
+        # Add image handling condition
+        if mime_type.startswith('image/'):
+            try:
+                request = drive_service.files().get_media(fileId=file_id)
+                downloader = MediaIoBaseDownload(file_stream, request)
+                done = False
+                while not done:
+                    status, done = downloader.next_chunk()
+                    print(f"Download progress: {int(status.progress() * 100)}%")
+                file_stream.seek(0)
+                print(f"Downloaded image size: {len(file_stream.getvalue())} bytes")
+                return extract_text_from_image(file_stream)
+            except HttpError as e:
+                raise ValueError(f"Failed to download image from Google Drive: {e}")
+        
         if mime_type == "application/pdf":
             try:
                 request = drive_service.files().get_media(fileId=file_id)
@@ -239,7 +259,7 @@ def process_url(url, drive_service=None, docs_service=None):
                 raise ValueError(f"Unexpected error processing DOC/DOCX file: {e}")
 
         else:
-            raise ValueError(f"Unsupported MIME type: {mime_type}. Only PDFs, Google Docs, DOCX, and DOC files can be processed.")
+            raise ValueError(f"Unsupported MIME type: {mime_type}. Only PDFs, Google Docs, DOCX, DOC files, and images can be processed.")
     
     # Handle direct PDF URLs
     elif url.endswith(".pdf"):
@@ -518,75 +538,74 @@ drive_service, docs_service = authenticate_google_api()
 column_order = None
 
 if st.button("Process Resumes"):
-    # Retrieve jd_json from session state
     jd_json = st.session_state.get('jd_json', None)
 
-    if csv_file and job_description and jd_json:  # Check if jd_json is defined
+    if csv_file and job_description and jd_json:
         try:
-            # Read CSV file
             df = pd.read_csv(csv_file)
             if "Resume Links" not in df.columns:
                 st.error("The uploaded CSV file must have a column named 'Resume Links'.")
             else:
                 results = []
-                unsupported_resumes = []  # List to collect unsupported MIME type resumes
-                total_resumes = len(df)  # Total number of resumes to process
-                progress_bar = st.progress(0)  # Initialize progress bar
-                progress_text = st.empty()  # Placeholder for progress text
+                unsupported_resumes = []
+                total_resumes = len(df)
+                progress_bar = st.progress(0)
+                progress_text = st.empty()
+
+                # Get column_order from jd_json
+                column_order = list(jd_json.keys())
 
                 for index, row in df.iterrows():
                     resume_url = row["Resume Links"]
                     try:
                         resume_text = process_url(resume_url, drive_service, docs_service)
                         result = evaluate_with_ai(resume_text, jd_json)
-
-                        # Extract keys from the first response as column_order
-                        if column_order is None:
-                            column_order = list(result.keys())
-
-                        # Standardize the result to match column_order
                         result_table = json_to_table(result, resume_url, column_order)
                         results.append(result_table)
-                    except ValueError as resume_e:
-                        error_message = str(resume_e)
-                        if "Unsupported MIME type" in error_message:
-                            unsupported_resumes.append({
-                                "Resume Link/Text": resume_url,
-                                "Reason": error_message
-                            })
-                        else:
-                            # Handle other errors (e.g., download failures)
-                            unsupported_resumes.append({
-                                "Resume Link/Text": resume_url,
-                                "Reason": f"Processing error: {error_message}"
-                            })
+                    except Exception as resume_e:
+                        # Create a DataFrame with NA values for failed processing
+                        error_data = {"Resume Link/Text": resume_url}
+                        
+                        # Add NA values for each column in column_order
+                        for key in column_order:
+                            error_data[f"{key} Value"] = "NA"
+                            error_data[f"{key} Remarks"] = str(resume_e)  # Add error message as remarks
+                        
+                        # Add Total Score as NA
+                        error_data["Total Score"] = "NA"
+                        
+                        # Create DataFrame with error data and append to results
+                        error_df = pd.DataFrame([error_data])
+                        results.append(error_df)
+                        
+                        # Also add to unsupported_resumes for separate tracking
+                        unsupported_resumes.append({
+                            "Resume Link/Text": resume_url,
+                            "Reason": str(resume_e)
+                        })
                     
-                    # Update progress bar and text
-                    progress = (index + 1) / total_resumes  # Calculate progress
-                    progress_bar.progress(progress)  # Update progress bar
-                    progress_text.text(f"Processing: {index + 1}/{total_resumes}...")  # Update progress text
+                    # Update progress
+                    progress = (index + 1) / total_resumes
+                    progress_bar.progress(progress)
+                    progress_text.text(f"Processing: {index + 1}/{total_resumes}...")
 
                 # Combine all results into one DataFrame
                 if results:
                     final_results = pd.concat(results, ignore_index=True)
-                    # Display the result in table format
-                    st.header("Evaluation Results")
+                    st.header("Evaluation Results (Including Failed Processes)")
                     st.dataframe(final_results)
-                else:
-                    st.warning("No resumes were successfully processed.")
-
-                # Display unsupported resumes if any
+                
+                # Display unsupported resumes separately
                 if unsupported_resumes:
-                    st.header("Unsupported Resumes")
+                    st.header("Failed Processing Details")
                     unsupported_df = pd.DataFrame(unsupported_resumes)
                     st.dataframe(unsupported_df)
 
-                # After processing resumes
-                processed_count = len(results)
+                # Summary statistics
+                processed_count = len(results) - len(unsupported_resumes)
                 unsupported_count = len(unsupported_resumes)
-
-                st.subheader(f"Processed Resumes: {processed_count}")
-                st.subheader(f"Unsupported Resumes: {unsupported_count}")
+                st.subheader(f"Successfully Processed Resumes: {processed_count}")
+                st.subheader(f"Failed Processing: {unsupported_count}")
 
         except Exception as e:
             st.error(f"An error occurred: {e}")
