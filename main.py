@@ -353,23 +353,37 @@ def evaluate_with_ai(resume_text, job_description):
         - YYYY-MM-DD
 
     7) If the job description asks for Work Experience:
-        **Work Experience Calculation** (if relevant):
-        1. Parse each **full-time** role’s start and end dates (ignore internships, training programs, or WILP unless the job description explicitly allows them).
-        2. If an end date is “Present” or “Till date,” calculate experience through today (or note an approximate ongoing duration).
-        3. Sum these durations across all **full-time roles only**.
-        4. Compare the candidate's total full-time experience with the requirement from the job description:
-        5. Do NOT double-count overlapping dates and do NOT consider internship periods, training programs, or WILP as full-time experience (unless the job description explicitly allows it).
-        6. If the candidate’s experience includes internships, WILP, or training, explicitly state in the `"remarks"` why these are excluded from full-time experience.
-            - Parse dates in **any valid date format**.
-            - Handle overlapping dates carefully:
-            - If roles overlap, **only count the non-overlapping period**.
-            - For partial dates (e.g., MM/YYYY), assume the **1st day of the month**.
-            - For single years (e.g., YYYY), assume **January 1st**.
-            - Include **all valid full-time durations** explicitly in the `"remarks"` with their parsed start and end dates.
-            - If a role is excluded (e.g., internship, training), clearly mention the **reason for exclusion** in `"remarks"`.
-            - Ensure each date range is **added sequentially** and non-overlapping durations are **not ignored**.
-            - If experience appears short, explicitly list **parsed durations per role** and how the total was calculated.
-
+        **Work Experience Calculation Rules:**
+        1. Parse dates following these rules:
+            - Ignore future dates
+            - For partial dates: use 1st of month (MM/YYYY)
+            - For year-only dates: use January 1st (YYYY)
+            - Current/Present date = today's date
+            - If date range is ambiguous (e.g., 2021-2022), use:
+                - Start: January 1st of first year
+                - End: December 31st of second year
+                
+        2. Experience Calculation:
+            - Only count non-overlapping periods
+            - Exclude internships/training unless explicitly allowed
+            - Exclude future dates
+            - For current roles, calculate up to today's date
+            
+        3. Output Requirements:
+            - List all parsed date ranges in remarks
+            - Show calculation breakdown
+            - Explain any excluded periods
+            - For ambiguous dates, state assumptions made
+            - If less than required experience:
+                - Set value = 0
+                - List actual duration in remarks
+                
+        4. Validation Steps:
+            - Compare total against job requirement
+            - Double-check date parsing logic
+            - Verify no future dates included
+            - Confirm non-overlapping calculation
+            
     8) If the job description specifies a particular industry and a specific designation (e.g., "1+ year of BDM or Managerial experience in Edtech"):
     - Confirm the candidate has a **full-time** role in that industry (Edtech) for at least the stated duration (1+ year).
     - Ensure the exact designation (e.g., BDM, Manager, Team Lead) is clearly stated in the resume. 
@@ -379,6 +393,7 @@ def evaluate_with_ai(resume_text, job_description):
     - Evaluate each criterion (`Must Have`, `Broader Context`) with:
         - `"value"`: `1` if condition is met, otherwise `0`.
         - `"remarks"`: A brief explanation of why the condition was or was not met. If the condition is not met, provide relevant keyword information about the parameter the candidate possesses.
+    
     ### JSON Output Format Example:
     {{
         "age": {{
@@ -402,6 +417,38 @@ def evaluate_with_ai(resume_text, job_description):
             - If not met, set `"value": 0` and explain why. Also, provide relevant keyword information about the parameter the candidate possesses.
 
     Return the results strictly in the above JSON format without any additional text or explanations.
+    
+    **Final Output Validation:**
+    Before returning JSON:
+    1. Required Values Check:
+       - Verify each parameter has "value" and "remarks"
+       - Validate value is strictly 0 or 1
+       - Ensure remarks explain the assigned value
+    
+    2. Date/Experience Logic:
+       - Verify date parsing accuracy
+       - Confirm no future dates counted
+       - Validate non-overlapping calculations
+    
+    3. Skills/Qualifications:
+       - Validate exact keyword matches
+       - Confirm alternative terms consideration
+       - Verify skill level assessments
+    
+    4. Location/Language:
+       - Validate explicit mentions
+       - Verify location-based inferences
+       - Confirm language proficiency evaluations
+    
+    5. Designation/Role:
+       - Verify exact title matches
+       - Validate role duration calculations
+       - Confirm industry-specific requirements
+    
+    6. Cross-Parameter Consistency:
+       - Check related parameters align
+       - Verify no contradictory assessments
+       - Validate interdependent criteria
     
     Here are the details Inputs:
 
@@ -444,6 +491,25 @@ def evaluate_with_ai(resume_text, job_description):
     print("Parsed Response:", result)
     
     return result
+
+    # 7) If the job description asks for Work Experience:
+    #     **Work Experience Calculation** (if relevant):
+    #     1. Parse each **full-time** role’s start and end dates (ignore internships, training programs, or WILP unless the job description explicitly allows them).
+    #     2. If an end date is “Present” or “Till date,” calculate experience through today (or note an approximate ongoing duration).
+    #     3. Sum these durations across all **full-time roles only**.
+    #     4. Compare the candidate's total full-time experience with the requirement from the job description:
+    #     5. Do NOT double-count overlapping dates and do NOT consider internship periods, training programs, or WILP as full-time experience (unless the job description explicitly allows it).
+    #     6. If the candidate’s experience includes internships, WILP, or training, explicitly state in the `"remarks"` why these are excluded from full-time experience.
+    #         - Parse dates in **any valid date format**.
+    #         - Handle overlapping dates carefully:
+    #         - If roles overlap, **only count the non-overlapping period**.
+    #         - For partial dates (e.g., MM/YYYY), assume the **1st day of the month**.
+    #         - For single years (e.g., YYYY), assume **January 1st**.
+    #         - Include **all valid full-time durations** explicitly in the `"remarks"` with their parsed start and end dates.
+    #         - If a role is excluded (e.g., internship, training), clearly mention the **reason for exclusion** in `"remarks"`.
+    #         - Ensure each date range is **added sequentially** and non-overlapping durations are **not ignored**.
+    #         - If experience appears short, explicitly list **parsed durations per role** and how the total was calculated.
+
 
 def convert_jd_to_json(jd_text):
     prompt = f"""
