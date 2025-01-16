@@ -355,7 +355,7 @@ def evaluate_with_ai(resume_text, job_description):
     7) If the job description asks for Work Experience:
         **Work Experience Calculation Rules:**
         1. Parse dates following these rules:
-            - Ignore future dates
+            - Use today's date ({datetime.datetime.now().strftime('%d/%m/%Y')}) as reference
             - For partial dates: use 1st of month (MM/YYYY)
             - For year-only dates: use January 1st (YYYY)
             - Current/Present date = today's date
