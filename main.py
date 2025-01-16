@@ -367,7 +367,13 @@ def evaluate_with_ai(resume_text, job_description):
         2. Experience Calculation:
             - Only count non-overlapping periods
             - Exclude internships/training unless explicitly allowed
-            - Exclude future dates
+            - For each role:
+                a. Parse start and end dates
+                b. If end date > today: truncate to today
+                c. Calculate valid duration
+                d. Show math: "(end_date - start_date) = X months"
+            - Sum all valid durations
+            - List any date adjustments made
             - For current roles, calculate up to today's date
             
         3. Output Requirements:
