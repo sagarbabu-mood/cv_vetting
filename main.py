@@ -325,13 +325,6 @@ def evaluate_with_ai(resume_text, job_description):
     
     prompt = f"""
     You are tasked with evaluating how compatible a job candidate is with a specific job description by comparing their resume to the outlined criteria. 
-    Here are the details:
-
-    **Job Description:**  
-    {job_description}
-
-    **Candidate Resume:**  
-    {resume_text}
 
     ### STRICTLY FOLLOW THESE INSTRUCTIONS:
     1) Evaluate based on the details explicitly mentioned in the resume. Do not assume information.
@@ -386,7 +379,6 @@ def evaluate_with_ai(resume_text, job_description):
     - Evaluate each criterion (`Must Have`, `Broader Context`) with:
         - `"value"`: `1` if condition is met, otherwise `0`.
         - `"remarks"`: A brief explanation of why the condition was or was not met. If the condition is not met, provide relevant keyword information about the parameter the candidate possesses.
-
     ### JSON Output Format Example:
     {{
         "age": {{
@@ -410,6 +402,16 @@ def evaluate_with_ai(resume_text, job_description):
             - If not met, set `"value": 0` and explain why. Also, provide relevant keyword information about the parameter the candidate possesses.
 
     Return the results strictly in the above JSON format without any additional text or explanations.
+    
+    Here are the details Inputs:
+
+    **Job Description:**  
+    {job_description}
+
+    **Candidate Resume:**  
+    {resume_text}
+
+
     """
     
     messages = [{"role": "system", "content": prompt}]
@@ -454,9 +456,6 @@ def convert_jd_to_json(jd_text):
     - If `Must Have` is mentioned as `NA`, include `"must_have": "NA"` in the JSON output.
     - If `Broader Context` is not specified, return `"broader_context": "NA"`.
 
-    Job Description:
-    {jd_text}
-
     Example Output:
     {{
         "age": {{
@@ -472,6 +471,9 @@ def convert_jd_to_json(jd_text):
     }}
 
     Return the results strictly in the above JSON format without any additional text or explanations.
+
+    Job Description:
+    {jd_text}
     """
     
     messages = [{"role": "system", "content": prompt}]
