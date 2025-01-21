@@ -6,8 +6,9 @@ import pandas as pd
 import requests
 from io import BytesIO
 import io
-import datetime
 import re
+from datetime import datetime  # Add this import
+
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 from google.oauth2 import service_account
@@ -20,6 +21,8 @@ import os
 
 # Add Tesseract to PATH for Windows
 pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'  # Adjust path if needed
+
+today_date = datetime.now().strftime('%Y-%m-%d')
 
 api_key = st.secrets["azure_openai"]["api_key"]
 azure_endpoint = st.secrets["azure_openai"]["azure_endpoint"]
@@ -325,147 +328,99 @@ def evaluate_with_ai(resume_text, job_description):
     print(job_description)  # Debugging line
     
     prompt = f"""
-    You are tasked with evaluating how compatible a job candidate is with a specific job description by comparing their resume to the outlined criteria. 
+    # CV Evaluation Assistant
 
-    ### STRICTLY FOLLOW THESE INSTRUCTIONS:
-    1) Evaluate based on the details explicitly mentioned in the resume. Do not assume information.
-    2) Handle the following conditions strictly:
-      1. **Must Have:** If explicitly mentioned as `NA`, skip evaluating this condition.
-      2. **Broader Context:** Use this as reference if available to infer details from the resume.
-    3) If the job description asks for `Age` evaluation:
-        1. Check if age is mentioned in the resume.
-        2. If DOB is not mentioned, infer age from graduation year.
-        3. If no age-related details are found, return as `0`.
-    4) If the job description asks for `Native Language` evaluation:
-        1. Check if the language is explicitly mentioned in the resume.
-        2. If not mentioned, infer based on candidate's work or native location.
-        3. If details are missing, return as `0`.
-    5) If the candidate worked under multiple roles in the same company, combine the duration for all roles.
-    6) If the job description asks for Designation:
-        **Designation-Specific Instructions**:
-        1. You must find an **exact** or **explicit** match for the required designation. For example, if the job requires “Manager,” the resume must explicitly mention “Manager,” “Managerial,” or a clearly equivalent title.
-        2. Do NOT assume that sales-related or counseling roles (e.g., Sales Executive, Academic Counselor, Business Development Associate) are automatically managerial unless the resume explicitly states managerial responsibilities or title.
-        3. If the role was an internship and the job description specifically requires a full-time position, do NOT consider an internship as fulfilling that requirement.
-        4. If a required designation is not stated in the resume, return `"value": 0` with remarks explaining why (e.g., “No exact managerial title mentioned. and mention what other designations the candidate have”).
+    You are an expert CV Evaluation Officer with extensive experience in talent assessment and recruitment. You are provided with the **Job Description** and **Candidate Resume**, your task is to perform a precise, criteria-based evaluation of candidate resumes against job requirements provided.
 
-    - While calculating the experience, Parse dates in **any standard date format**, including but not limited to:
-        - DD/MM/YYYY
-        - MM/DD/YYYY
-        - YYYY-MM-DD
+    # Inputs
+    ```
+    - You are provided with the **Job Description** and **Candidate Resume**
+      - **Job Description** contains the requirements of a particular job.
+      - **Candidate Resume** contains the details of a candidate
+    ```
 
-    7) If the job description asks for Work Experience:
-        **Work Experience Calculation Rules:**
-        1. Parse dates following these rules:
-            - Use today's date ({datetime.datetime.now().strftime('%d/%m/%Y')}) as reference
-            - For partial dates: use 1st of month (MM/YYYY)
-            - For year-only dates: use January 1st (YYYY)
-            - Current/Present date = today's date
-            - If date range is ambiguous (e.g., 2021-2022), use:
-                - Start: January 1st of first year
-                - End: December 31st of second year
-                
-        2. Experience Calculation:
-            - Only count non-overlapping periods
-            - Exclude internships/training unless explicitly allowed
-            - For each role:
-                a. Parse start and end dates
-                b. If end date > today: truncate to today
-                c. Calculate valid duration
-                d. Show math: "(end_date - start_date) = X months"
-            - Sum all valid durations
-            - List any date adjustments made
-            - For current roles, calculate up to today's date
-            
-        3. Output Requirements:
-            - List all parsed date ranges in remarks
-            - Show calculation breakdown
-            - Explain any excluded periods
-            - For ambiguous dates, state assumptions made
-            - If less than required experience:
-                - Set value = 0
-                - List actual duration in remarks
-                
-        4. Validation Steps:
-            - Compare total against job requirement
-            - Double-check date parsing logic
-            - Verify no future dates included
-            - Confirm non-overlapping calculation
-            
-    8) If the job description specifies a particular industry and a specific designation (e.g., "1+ year of BDM or Managerial experience in Edtech"):
-    - Confirm the candidate has a **full-time** role in that industry (Edtech) for at least the stated duration (1+ year).
-    - Ensure the exact designation (e.g., BDM, Manager, Team Lead) is clearly stated in the resume. 
-        - "Senior BDA" alone does not count as managerial unless explicitly stated (e.g., “led a team”).
-    - If the candidate meets these conditions, set "value": 1 with a brief reason. Otherwise, set "value": 0 and note the shortfall (e.g., “Not managerial,” “Less than 1 year,” “Not Edtech,” etc.).
+    ## Understanding the Job parameters:
+    ```
+    - GO through the **Job Description** details provided and understand the parameters of the job role.
+    ```
 
-    - Evaluate each criterion (`Must Have`, `Broader Context`) with:
-        - `"value"`: `1` if condition is met, otherwise `0`.
-        - `"remarks"`: A brief explanation of why the condition was or was not met. If the condition is not met, provide relevant keyword information about the parameter the candidate possesses.
+    ## Data Extraction Instrcutions:
+    ```
+    Throughly review the candidate's resume and get the required details mentioned in the 'Job parameters'.
+    1. Extract all dates (like age, work experience, etc) and put them in this format (YYYY-MM-DD)
+    2. Identify the job roles and their durations (consider even if duration is still present)
+    3. Extract the candidate's educational qualifications with completion dates (consider even if duration is still present)
+    4. List all the skills mentioned in the resume.
+    5. Note if any of the infomation (like: age, language, location) is not explicitly mentioned in the candidate resume then evaluate as below:
+        - If candidate hasn't mentioned his date explicitily but provided the `date of birth` then calculate the years, else keep it as '0'
+        - Extract the speaking language based on the location and work details provided, else return as '0'
+        - If the end data of the work experice is still as present then calculate the experience till {today_date}.
+    ```
+
+    ## Job parameters Evaluations:
+    ```
+    - Based on the parameters provided in the **Job Description**, evaluate each parameters against the Candidate's resume to check the eligibility for the job role.
+
+    ## Output Rules
+    1. Each parameter evaluation must include:
+    - Binary value (1/0)
+    - Evidence-based remarks for the above value
+    - If the criteria is not met then mention the current qualification
+    2. Handle NA requirements:
+    - Skip Must Have evaluation if marked NA
+    - Use Broader Context if available
+    3. Document all exclusions with reasoning
+
+    ## Output Format Instrcutions
+    ```
+    - Provide the output response in the standard JSON object format.
+    ```
+
+    ## Restrictions
+    ```
+    - Do not make any assumption with the information provide and only evaluate if particular mentioned in candidate's resume
+    ```
     
-    ### JSON Output Format Example:
-    {{
-        "age": {{
-            "value": 1,
-            "remarks": "Candidate meets the age criteria mentioned in the job description."
-        }},
-        "native_language": {{
-            "value": 0,
-            "remarks": "Language not explicitly mentioned in resume."
-        }},
-        "experience": {{
-            "value": 1,
-            "remarks": "Candidate has sufficient experience in relevant domain."
+    ## Example Response Format:
+    ```
+     - Here is an example of the JSON object Format Response for your referrence.
+        ```
+        {{
+            "age": {{
+                "value": 1,
+                "remarks": "Candidate meets the age criteria mentioned in the job description."
+            }},
+            "native_language": {{
+                "value": 0,
+                "remarks": "Language not explicitly mentioned in resume."
+            }},
+            "experience": {{
+                "value": 1,
+                "remarks": "Candidate has sufficient experience in relevant domain."
+            }}
         }}
-    }}
+        ```
 
-    - If a condition is marked as `Must Have: NA`:
-        1. Check if a `Broader Context for Prompt Criteria` exists.
-        2. If Broader Context exists, evaluate the candidate based on that.
-            - If the condition is met, set `"value": 1` and provide appropriate remarks.
-            - If not met, set `"value": 0` and explain why. Also, provide relevant keyword information about the parameter the candidate possesses.
+    Note: Do not include any extra content in the output.
+    ```
 
-    Return the results strictly in the above JSON format without any additional text or explanations.
     
-    **Final Output Validation:**
-    Before returning JSON:
-    1. Required Values Check:
-       - Verify each parameter has "value" and "remarks"
-       - Validate value is strictly 0 or 1
-       - Ensure remarks explain the assigned value
-    
-    2. Date/Experience Logic:
-       - Verify date parsing accuracy
-       - Confirm no future dates counted
-       - Validate non-overlapping calculations
-    
-    3. Skills/Qualifications:
-       - Validate exact keyword matches
-       - Confirm alternative terms consideration
-       - Verify skill level assessments
-    
-    4. Location/Language:
-       - Validate explicit mentions
-       - Verify location-based inferences
-       - Confirm language proficiency evaluations
-    
-    5. Designation/Role:
-       - Verify exact title matches
-       - Validate role duration calculations
-       - Confirm industry-specific requirements
-    
-    6. Cross-Parameter Consistency:
-       - Check related parameters align
-       - Verify no contradictory assessments
-       - Validate interdependent criteria
-    
-    Here are the details Inputs:
+    #ResponseVerification:
+    ```
+    Take your time and evalutate the below instruction clearly.
+    - Verify that you have correctly understand the job parameters mentioned in the **Job Description**
+    - Verify you have extracted the required data mentioned in the **Job Description** from candidate's resume.
+    - Verify the you have correctly evaluated the required parameters from the candidate's resume.
+    ```
+   
+    Here are the details:
 
     **Job Description:**  
     {job_description}
 
     **Candidate Resume:**  
     {resume_text}
-
-
+   
     """
     
     messages = [{"role": "system", "content": prompt}]
@@ -473,7 +428,8 @@ def evaluate_with_ai(resume_text, job_description):
     # API Call
     response = client.chat.completions.create(
         model="gpt-4o",  # Replace with the correct model
-        messages=messages
+        messages=messages,
+        temperature= 0.001
     )
     
     # Debugging: Print the raw response content
@@ -499,54 +455,35 @@ def evaluate_with_ai(resume_text, job_description):
     
     return result
 
-    # 7) If the job description asks for Work Experience:
-    #     **Work Experience Calculation** (if relevant):
-    #     1. Parse each **full-time** role’s start and end dates (ignore internships, training programs, or WILP unless the job description explicitly allows them).
-    #     2. If an end date is “Present” or “Till date,” calculate experience through today (or note an approximate ongoing duration).
-    #     3. Sum these durations across all **full-time roles only**.
-    #     4. Compare the candidate's total full-time experience with the requirement from the job description:
-    #     5. Do NOT double-count overlapping dates and do NOT consider internship periods, training programs, or WILP as full-time experience (unless the job description explicitly allows it).
-    #     6. If the candidate’s experience includes internships, WILP, or training, explicitly state in the `"remarks"` why these are excluded from full-time experience.
-    #         - Parse dates in **any valid date format**.
-    #         - Handle overlapping dates carefully:
-    #         - If roles overlap, **only count the non-overlapping period**.
-    #         - For partial dates (e.g., MM/YYYY), assume the **1st day of the month**.
-    #         - For single years (e.g., YYYY), assume **January 1st**.
-    #         - Include **all valid full-time durations** explicitly in the `"remarks"` with their parsed start and end dates.
-    #         - If a role is excluded (e.g., internship, training), clearly mention the **reason for exclusion** in `"remarks"`.
-    #         - Ensure each date range is **added sequentially** and non-overlapping durations are **not ignored**.
-    #         - If experience appears short, explicitly list **parsed durations per role** and how the total was calculated.
-
-
 def convert_jd_to_json(jd_text):
     prompt = f"""
-    You are tasked with converting a job description into a structured JSON format. Each parameter in the job description should be represented with:
-    - `criteria`: A concise summary of the requirement.
-    - `must_have`: The mandatory conditions or requirements (if it's not mandatory, return `NA`).
-    - `broader_context`: Detailed steps or logic to evaluate the criteria.
+        You are tasked with converting a job description into a structured JSON format. Each parameter in the job description should be represented with:
+        - `criteria`: A concise summary of the requirement.
+        - `must_have`: The mandatory conditions or requirements (if it's not mandatory, return `NA`).
+        - `broader_context`: Detailed steps or logic to evaluate the criteria.
 
-    **Important Notes:**
-    - If `Must Have` is mentioned as `NA`, include `"must_have": "NA"` in the JSON output.
-    - If `Broader Context` is not specified, return `"broader_context": "NA"`.
+        **Important Notes:**
+        - If `Must Have` is mentioned as `NA`, include `"must_have": "NA"` in the JSON output.
+        - If `Broader Context` is not specified, return `"broader_context": "NA"`.
 
-    Example Output:
-    {{
-        "age": {{
-            "criteria": "Age should be less than 30 (consider 31 if other parameters match).",
-            "must_have": "Age <30. If rest of the parameters match, we can consider 31.",
-            "broader_context": "1. Candidate will mention in Resume\n2. If DOB is not mentioned, calculate from the year of graduation\n3. If those two are not mentioned, calculate from the starting year of career\n4. Else give as 0"
-        }},
-        "native_language": {{
-            "criteria": "Native Language or Known Language: Marathi",
-            "must_have": "Must explicitly mention Marathi in resume.",
-            "broader_context": "1. Candidate will mention in Resume\n2. If not mentioned, infer based on candidate work locations or native location\n3. Else give as missing"
+        Job Description:
+        {jd_text}
+
+        Example Output:
+        {{
+            "age": {{
+                "criteria": "Age should be less than 30 (consider 31 if other parameters match).",
+                "must_have": "Age <30. If rest of the parameters match, we can consider 31.",
+                "broader_context": "1. Candidate will mention in Resume\n2. If DOB is not mentioned, calculate from the year of graduation\n3. If those two are not mentioned, calculate from the starting year of career\n4. Else give as 0"
+            }},
+            "native_language": {{
+                "criteria": "Native Language or Known Language: Marathi",
+                "must_have": "Must explicitly mention Marathi in resume.",
+                "broader_context": "1. Candidate will mention in Resume\n2. If not mentioned, infer based on candidate work locations or native location\n3. Else give as missing"
+            }}
         }}
-    }}
 
-    Return the results strictly in the above JSON format without any additional text or explanations.
-
-    Job Description:
-    {jd_text}
+        Return the results strictly in the above JSON format without any additional text or explanations.
     """
     
     messages = [{"role": "system", "content": prompt}]
@@ -662,7 +599,7 @@ if st.button("Process Resumes"):
                     # Update progress
                     progress = (index + 1) / total_resumes
                     progress_bar.progress(progress)
-                    progress_text.text(f"Processing: {index + 1}/{total_resumes}...")
+                    progress_text.text(f"Processed: {index + 1}/{total_resumes}...")
 
                 # Combine all results into one DataFrame
                 if results:
