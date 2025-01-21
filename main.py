@@ -365,6 +365,7 @@ def evaluate_with_ai(resume_text, job_description):
     1. Each parameter evaluation must include:
     - Binary value (1/0), 1 indicating that candidate criteria requirement is met while 0 indicates that candidate has not met the requirement.
         - Example: if the student exerience is 7 months and the required experience is 3 then the binary value should be 1.
+        - The candidate has 4 months and 6 days of work experience from 2024-05-01 to 2024-09-07, which is more than the required 3 months, then the binary value should be 1.        
     - Evidence-based remarks for the above value
     - If the criteria is not met then mention the current qualification
     2. Handle NA requirements:
