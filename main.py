@@ -328,7 +328,7 @@ def evaluate_with_ai(resume_text, job_description):
     print(job_description)  # Debugging line
     
     prompt = f"""
-    # CV Evaluation Assistant
+    # CV Evaluation Expert
 
     You are an expert CV Evaluation Officer with extensive experience in talent assessment and recruitment. You are provided with the **Job Description** and **Candidate Resume**, your task is to perform a precise, criteria-based evaluation of candidate resumes against job requirements provided.
 
@@ -344,7 +344,7 @@ def evaluate_with_ai(resume_text, job_description):
     - GO through the **Job Description** details provided and understand the parameters of the job role.
     ```
 
-    ## Data Extraction Instrcutions:
+    ## Data Extraction Instructions:
     ```
     Throughly review the candidate's resume and get the required details mentioned in the 'Job parameters'.
     1. Extract all dates (like age, work experience, etc) and put them in this format (YYYY-MM-DD)
@@ -354,16 +354,17 @@ def evaluate_with_ai(resume_text, job_description):
     5. Note if any of the infomation (like: age, language, location) is not explicitly mentioned in the candidate resume then evaluate as below:
         - If candidate hasn't mentioned his date explicitily but provided the `date of birth` then calculate the years, else keep it as '0'
         - Extract the speaking language based on the location and work details provided, else return as '0'
-        - If the end data of the work experice is still as present then calculate the experience till {today_date}.
+        - If the end data of the work experience is still as present then calculate the experience from start date to till `today:{today_date}` and compare the total experience again the parameter.
     ```
 
     ## Job parameters Evaluations:
     ```
     - Based on the parameters provided in the **Job Description**, evaluate each parameters against the Candidate's resume to check the eligibility for the job role.
-
+    ```
     ## Output Rules
     1. Each parameter evaluation must include:
-    - Binary value (1/0)
+    - Binary value (1/0), 1 indicating that candidate criteria requirement is met while 0 indicates that candidate has not met the requirement.
+        - Example: if the student exerience is 7 months and the required experience is 3 then the binary value should be 1.
     - Evidence-based remarks for the above value
     - If the criteria is not met then mention the current qualification
     2. Handle NA requirements:
@@ -371,7 +372,7 @@ def evaluate_with_ai(resume_text, job_description):
     - Use Broader Context if available
     3. Document all exclusions with reasoning
 
-    ## Output Format Instrcutions
+    ## Output Format Instructions
     ```
     - Provide the output response in the standard JSON object format.
     ```
@@ -380,23 +381,34 @@ def evaluate_with_ai(resume_text, job_description):
     ```
     - Do not make any assumption with the information provide and only evaluate if particular mentioned in candidate's resume
     ```
+
+    ## Common Missing Points:
+    ```
+    - Mentioning as less experience even though the experience is more than the required criteria
+    -  Providing irrelevant value in a particular values or remarks
+    ```
+
+        Evaluation Process:
+        ```
+    - Evaluate each parameter clearly, how you are calculating the value and adding the remarks.
+        ```
     
     ## Example Response Format:
-    ```
+    ```        
      - Here is an example of the JSON object Format Response for your referrence.
         ```
         {{
-            "age": {{
-                "value": 1,
-                "remarks": "Candidate meets the age criteria mentioned in the job description."
+            "[parameter_1]": {{
+                "value": [value],
+                "remarks": "[remarks]"
             }},
-            "native_language": {{
-                "value": 0,
-                "remarks": "Language not explicitly mentioned in resume."
+            "[parameter_2]":": {{
+                "value": [value],
+                "remarks": "[remarks]"
             }},
-            "experience": {{
-                "value": 1,
-                "remarks": "Candidate has sufficient experience in relevant domain."
+            "[parameter_3]":": {{
+                "value": [value],
+                "remarks": "[remarks]"
             }}
         }}
         ```
@@ -404,13 +416,13 @@ def evaluate_with_ai(resume_text, job_description):
     Note: Do not include any extra content in the output.
     ```
 
-    
-    #ResponseVerification:
+    #MandatoryResponseVerification:
     ```
-    Take your time and evalutate the below instruction clearly.
-    - Verify that you have correctly understand the job parameters mentioned in the **Job Description**
+    Take your time and cross verify below things correcly to avoid inaccurate responses.
+    - Verify that you have correctly understand the job parameters mentioned in the **Job Description** provided
     - Verify you have extracted the required data mentioned in the **Job Description** from candidate's resume.
-    - Verify the you have correctly evaluated the required parameters from the candidate's resume.
+    - Strictly Verify that you have evaluated the the valid value/data for each and every parameter, if not recheck the candidate's resume again and assign the correct values.
+    - Strictly recheck the you have correctly mentioned the binary value in the 'value' section especially age, work experience to maintain the accuracy clearly if applicable.
     ```
    
     Here are the details:
@@ -429,7 +441,7 @@ def evaluate_with_ai(resume_text, job_description):
     response = client.chat.completions.create(
         model="gpt-4o",  # Replace with the correct model
         messages=messages,
-        temperature= 0.001
+        temperature= 0.00001
     )
     
     # Debugging: Print the raw response content
