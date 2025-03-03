@@ -29,8 +29,7 @@ gemini_endpoint = st.secrets["gemini"]["endpoint"]
 # Function to call Gemini API
 def gemini_completion(prompt):
     headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {gemini_api_key}"
+        "Content-Type": "application/json"    
     }
     payload = {"contents": [{"parts": [{"text": prompt}]}]}
     try:
