@@ -1,22 +1,20 @@
 import streamlit as st
 import json
 from PyPDF2 import PdfReader
-from openai import AzureOpenAI
 import pandas as pd
 import requests
 from io import BytesIO
 import io
 import re
-from datetime import datetime  # Add this import
-
+from datetime import datetime
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 from google.oauth2 import service_account
-from docx import Document  # Import for DOCX processing
+from docx import Document
 from googleapiclient.errors import HttpError
 import textract
 import pytesseract
-from PIL import Image  # Add this import at the top
+from PIL import Image
 import os
 
 # Add Tesseract to PATH for Windows
@@ -24,36 +22,74 @@ pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tessera
 
 today_date = datetime.now().strftime('%Y-%m-%d')
 
-api_key = st.secrets["azure_openai"]["api_key"]
-azure_endpoint = st.secrets["azure_openai"]["azure_endpoint"]
+# Retrieve Gemini API credentials from secrets
+gemini_api_key = st.secrets["gemini"]["api_key"]
+gemini_endpoint = st.secrets["gemini"]["endpoint"]
 
-client = AzureOpenAI(
-    azure_endpoint=azure_endpoint,
-    api_key=api_key,
-    api_version="2024-02-01"
-)
+# Function to call Gemini API
+def gemini_completion(prompt):
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {gemini_api_key}"
+    }
+    payload = {"contents": [{"parts": [{"text": prompt}]}]}
+    try:
+        response = requests.post(gemini_endpoint, headers=headers, json=payload)
+        if response.status_code == 200:
+            data = response.json()
+            if "candidates" in data and len(data["candidates"]) > 0:
+                candidate = data["candidates"][0]
+                if "content" in candidate and "parts" in candidate["content"] and len(candidate["content"]["parts"]) > 0:
+                    return candidate["content"]["parts"][0]["text"].strip()
+            return ""
+        else:
+            st.error(f"Gemini API error: {response.status_code} {response.text}")
+            return ""
+    except Exception as e:
+        st.error(f"Exception in gemini_completion: {e}")
+        return ""
+
+# Function to clean and parse the response
+def clean_and_parse_response(response_text):
+    # Remove markdown formatting if present
+    for prefix in ["```json", "```"]:
+        if response_text.startswith(prefix):
+            response_text = response_text[len(prefix):]
+    response_text = response_text.strip()
+    # Extract the first JSON object from the response
+    start_index = response_text.find("{")
+    end_index = response_text.rfind("}")
+    if start_index != -1 and end_index != -1:
+        json_str = response_text[start_index:end_index+1]
+    else:
+        json_str = response_text
+    # Parse JSON
+    try:
+        result = json.loads(json_str)
+        return result
+    except json.JSONDecodeError:
+        raise ValueError(f"The response is not valid JSON. Raw content: {response_text}")
 
 # Authenticate and initialize the Google API clients
-
 def authenticate_google_api():
     credentials_info = json.loads(st.secrets["google_api"]["credentials"])
     credentials = service_account.Credentials.from_service_account_info(
         credentials_info, scopes=[
-            "https://www.googleapis.com/auth/drive.readonly", "https://www.googleapis.com/auth/documents.readonly"]
+            "https://www.googleapis.com/auth/drive.readonly",
+            "https://www.googleapis.com/auth/documents.readonly"
+        ]
     )
     drive_service = build("drive", "v3", credentials=credentials)
     docs_service = build("docs", "v1", credentials=credentials)
     return drive_service, docs_service
 
 # Function to extract text from uploaded PDF
-
 def extract_text_from_pdf(pdf_file):
     reader = PdfReader(pdf_file)
     text = "\n".join(page.extract_text() for page in reader.pages)
     return text
 
 # Extract text from Google Drive files
-
 def extract_text_from_google_drive(drive_service, file_id):
     request = drive_service.files().get_media(fileId=file_id)
     file_stream = io.BytesIO()
@@ -62,15 +98,10 @@ def extract_text_from_google_drive(drive_service, file_id):
     while not done:
         status, done = downloader.next_chunk()
     file_stream.seek(0)
-
-    # Debugging: Check the size of the downloaded file
     print("Downloaded file size:", file_stream.getbuffer().nbytes)
-
-    # Handle PDF and DOCX formats
     return extract_text_from_pdf(file_stream)
 
-# Extract text from Google Docs
-
+# Extract text from Google Docs as DOCX
 def extract_text_from_docx(docx_file):
     try:
         document = Document(docx_file)
@@ -79,6 +110,7 @@ def extract_text_from_docx(docx_file):
     except Exception as e:
         raise ValueError(f"Failed to extract text from DOCX: {e}")
 
+# Extract text from DOC files
 def extract_text_from_doc(doc_file):
     try:
         text = textract.process(doc_file, extension='doc').decode('utf-8')
@@ -86,6 +118,7 @@ def extract_text_from_doc(doc_file):
     except Exception as e:
         raise ValueError(f"Failed to extract text from DOC file: {e}")
 
+# Extract text from images using OCR
 def extract_text_from_image(file_stream):
     try:
         image = Image.open(file_stream)
@@ -94,10 +127,8 @@ def extract_text_from_image(file_stream):
     except Exception as e:
         raise ValueError(f"Failed to perform OCR on the image: {e}")
 
+# Extract file ID from URL
 def extract_file_id(url):
-    """
-    Extracts the file ID from a Google Docs URL using regex.
-    """
     pattern = r"/d/([a-zA-Z0-9_-]+)"
     match = re.search(pattern, url)
     if match:
@@ -105,25 +136,18 @@ def extract_file_id(url):
     else:
         raise ValueError("Could not extract file ID from URL.")
 
+# Process various URL types
 def process_url(url, drive_service=None, docs_service=None):
-    # Handle Google Docs URLs
     if "docs.google.com/document/d/" in url:
-        # Extract the file ID from the URL using regex
         try:
             file_id = extract_file_id(url)
-        except ValueError as ve:
-            raise ValueError(f"Invalid Google Docs URL format: {ve}")
-        
-        # Fetch the file metadata
-        try:
             file_metadata = drive_service.files().get(fileId=file_id, fields="mimeType").execute()
             mime_type = file_metadata.get("mimeType")
-            print(f"File ID: {file_id}, MIME Type: {mime_type}")  # Debugging line
+            print(f"File ID: {file_id}, MIME Type: {mime_type}")
         except Exception as e:
             raise ValueError(f"Failed to retrieve file metadata: {e}")
-        
+
         if mime_type == "application/vnd.google-apps.document":
-            # Native Google Docs file; export as DOCX
             try:
                 request = drive_service.files().export_media(
                     fileId=file_id,
@@ -134,15 +158,13 @@ def process_url(url, drive_service=None, docs_service=None):
                 done = False
                 while not done:
                     status, done = downloader.next_chunk()
-                    print(f"Download progress: {int(status.progress() * 100)}%")  # Debugging line
+                    print(f"Download progress: {int(status.progress() * 100)}%")
                 file_stream.seek(0)
-                print(f"Downloaded DOCX size: {len(file_stream.getvalue())} bytes")  # Debugging line
+                print(f"Downloaded DOCX size: {len(file_stream.getvalue())} bytes")
                 return extract_text_from_docx(file_stream)
             except HttpError as e:
                 raise ValueError(f"Failed to export Google Doc as DOCX: {e}")
-        
         elif mime_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
-            # Already a DOCX file; download directly
             try:
                 request = drive_service.files().get_media(fileId=file_id)
                 file_stream = io.BytesIO()
@@ -150,15 +172,13 @@ def process_url(url, drive_service=None, docs_service=None):
                 done = False
                 while not done:
                     status, done = downloader.next_chunk()
-                    print(f"Download progress: {int(status.progress() * 100)}%")  # Debugging line
+                    print(f"Download progress: {int(status.progress() * 100)}%")
                 file_stream.seek(0)
-                print(f"Downloaded DOCX size: {len(file_stream.getvalue())} bytes")  # Debugging line
+                print(f"Downloaded DOCX size: {len(file_stream.getvalue())} bytes")
                 return extract_text_from_docx(file_stream)
             except HttpError as e:
                 raise ValueError(f"Failed to download DOCX from Google Drive: {e}")
-        
         elif mime_type == "application/msword":
-            # DOC file; download directly and extract text using textract
             try:
                 request = drive_service.files().get_media(fileId=file_id)
                 file_stream = io.BytesIO()
@@ -166,17 +186,15 @@ def process_url(url, drive_service=None, docs_service=None):
                 done = False
                 while not done:
                     status, done = downloader.next_chunk()
-                    print(f"Download progress: {int(status.progress() * 100)}%")  # Debugging line
+                    print(f"Download progress: {int(status.progress() * 100)}%")
                 file_stream.seek(0)
-                print(f"Downloaded DOC size: {len(file_stream.getvalue())} bytes")  # Debugging line
+                print(f"Downloaded DOC size: {len(file_stream.getvalue())} bytes")
                 return extract_text_from_doc(file_stream)
             except HttpError as e:
                 raise ValueError(f"Failed to download DOC file from Google Drive: {e}")
-        
         else:
-            raise ValueError(f"Unsupported MIME type: {mime_type}. Only Google Docs files, DOCX, and DOC files can be processed.")
-    
-    # Handle other Google Drive URLs
+            raise ValueError(f"Unsupported MIME type: {mime_type}")
+
     elif "drive.google.com" in url:
         if "open?id=" in url:
             file_id = url.split("id=")[-1].split("&")[0]
@@ -184,17 +202,15 @@ def process_url(url, drive_service=None, docs_service=None):
             file_id = url.split("/d/")[1].split("/")[0]
         else:
             raise ValueError("Invalid Google Drive URL format.")
-        
-        # Fetch the file metadata
+
         try:
             file_metadata = drive_service.files().get(fileId=file_id, fields="mimeType").execute()
             mime_type = file_metadata.get("mimeType")
-            print(f"File ID: {file_id}, MIME Type: {mime_type}")  # Debugging line
+            print(f"File ID: {file_id}, MIME Type: {mime_type}")
         except Exception as e:
             raise ValueError(f"Failed to retrieve file metadata: {e}")
-        
+
         file_stream = io.BytesIO()
-        # Add image handling condition
         if mime_type.startswith('image/'):
             try:
                 request = drive_service.files().get_media(fileId=file_id)
@@ -208,7 +224,7 @@ def process_url(url, drive_service=None, docs_service=None):
                 return extract_text_from_image(file_stream)
             except HttpError as e:
                 raise ValueError(f"Failed to download image from Google Drive: {e}")
-        
+
         if mime_type == "application/pdf":
             try:
                 request = drive_service.files().get_media(fileId=file_id)
@@ -216,14 +232,13 @@ def process_url(url, drive_service=None, docs_service=None):
                 done = False
                 while not done:
                     status, done = downloader.next_chunk()
-                    print(f"Download progress: {int(status.progress() * 100)}%")  # Debugging line
+                    print(f"Download progress: {int(status.progress() * 100)}%")
                 file_stream.seek(0)
-                print(f"Downloaded PDF size: {len(file_stream.getvalue())} bytes")  # Debugging line
+                print(f"Downloaded PDF size: {len(file_stream.getvalue())} bytes")
                 return extract_text_from_pdf(file_stream)
             except HttpError as e:
                 raise ValueError(f"Failed to download PDF from Google Drive: {e}")
         elif mime_type == "application/vnd.google-apps.document":
-            # Native Google Docs file; export as DOCX
             try:
                 request = drive_service.files().export_media(
                     fileId=file_id,
@@ -234,102 +249,84 @@ def process_url(url, drive_service=None, docs_service=None):
                 done = False
                 while not done:
                     status, done = downloader.next_chunk()
-                    print(f"Download progress: {int(status.progress() * 100)}%")  # Debugging line
+                    print(f"Download progress: {int(status.progress() * 100)}%")
                 file_stream.seek(0)
-                print(f"Downloaded DOCX size: {len(file_stream.getvalue())} bytes")  # Debugging line
+                print(f"Downloaded DOCX size: {len(file_stream.getvalue())} bytes")
                 return extract_text_from_docx(file_stream)
             except HttpError as e:
                 raise ValueError(f"Failed to export Google Doc as DOCX: {e}")
         elif mime_type in ["application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/msword"]:
-            # Handle DOCX and DOC files
             try:
                 request = drive_service.files().get_media(fileId=file_id)
                 downloader = MediaIoBaseDownload(file_stream, request)
                 done = False
                 while not done:
                     status, done = downloader.next_chunk()
-                    print(f"Download progress: {int(status.progress() * 100)}%")  # Debugging line
+                    print(f"Download progress: {int(status.progress() * 100)}%")
                 file_stream.seek(0)
                 file_size = len(file_stream.getvalue())
-                print(f"Downloaded {'DOCX' if mime_type == 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' else 'DOC'} size: {file_size} bytes")  # Debugging line
-
+                print(f"Downloaded {'DOCX' if mime_type == 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' else 'DOC'} size: {file_size} bytes")
                 if mime_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
                     return extract_text_from_docx(file_stream)
                 elif mime_type == "application/msword":
                     return extract_text_from_doc(file_stream)
             except HttpError as e:
                 raise ValueError(f"Failed to download DOC/DOCX file from Google Drive: {e}")
-            except Exception as e:
-                raise ValueError(f"Unexpected error processing DOC/DOCX file: {e}")
-
         else:
-            raise ValueError(f"Unsupported MIME type: {mime_type}. Only PDFs, Google Docs, DOCX, DOC files, and images can be processed.")
-    
-    # Handle direct PDF URLs
+            raise ValueError(f"Unsupported MIME type: {mime_type}")
+
     elif url.endswith(".pdf"):
         try:
             response = requests.get(url)
             if response.status_code != 200:
                 raise ValueError(f"Failed to download PDF from URL: {url}")
             pdf_file = BytesIO(response.content)
-            print(f"Downloaded PDF size: {len(pdf_file.getvalue())} bytes")  # Debugging line
+            print(f"Downloaded PDF size: {len(pdf_file.getvalue())} bytes")
             return extract_text_from_pdf(pdf_file)
         except Exception as e:
             raise ValueError(f"Failed to download PDF from URL: {e}")
-    
-        # Handle direct Image URLs
-    
+
     elif url.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.bmp', '.tiff', '.tif')):
         try:
             response = requests.get(url)
             if response.status_code != 200:
                 raise ValueError(f"Failed to download image from URL: {url}")
             image_file = BytesIO(response.content)
-            print(f"Downloaded Image size: {len(image_file.getvalue())} bytes")  # Debugging line
+            print(f"Downloaded Image size: {len(image_file.getvalue())} bytes")
             return extract_text_from_image(image_file)
         except Exception as e:
             raise ValueError(f"Failed to process image from URL: {e}")
 
-
     else:
         raise ValueError("Unsupported URL format or file type.")
 
+# Convert JSON result to table
 def json_to_table(json_result, resume_link, column_order):
-    # Initialize row with placeholders for all columns
     table_data = {"Resume Link/Text": [resume_link]}
-    # Extract values directly based on position
     values = list(json_result.values())
-
-    total_conditions = len(column_order)  # Total number of conditions
-    met_conditions = 0  # Counter for met conditions
+    total_conditions = len(column_order)
+    met_conditions = 0
 
     for idx, key in enumerate(column_order):
-        if idx < len(values):  # Ensure the position exists in the JSON
-            value_data = values[idx]  # Access data by position
-            if value_data.get("value") == 1:  # Check if the condition is met
-                met_conditions += 1  # Increment counter for met conditions
+        if idx < len(values):
+            value_data = values[idx]
+            if value_data.get("value") == 1:
+                met_conditions += 1
         else:
-            # Handle missing positions
             value_data = {"value": None, "remarks": "Data missing"}
-
-        # Add the extracted value and remarks to the table
         table_data[f"{key} Value"] = [value_data.get("value")]
         table_data[f"{key} Remarks"] = [value_data.get("remarks")]
 
-    # Add the summary column for met conditions
-    summary = f"{met_conditions}/{total_conditions}"  # Format as met/total
-    table_data["Total Score"] = [summary]  # Add summary to the table data
-
+    summary = f"{met_conditions}/{total_conditions}"
+    table_data["Total Score"] = [summary]
     return pd.DataFrame(table_data)
 
-# AI-based evaluation function
-
+# Updated AI-based evaluation function
 def evaluate_with_ai(resume_text, job_description):
     print(job_description)  # Debugging line
     
     prompt = f"""
     # CV Evaluation Expert
-
     You are an expert CV Evaluation Officer with extensive experience in talent assessment and recruitment. You are provided with the **Job Description** and **Candidate Resume**, your task is to perform a precise, criteria-based evaluation of candidate resumes against job requirements provided.
 
     # Inputs
@@ -389,30 +386,30 @@ def evaluate_with_ai(resume_text, job_description):
     -  Providing irrelevant value in a particular values or remarks
     ```
 
-        Evaluation Process:
-        ```
+    Evaluation Process:
+    ```
     - Evaluate each parameter clearly, how you are calculating the value and adding the remarks.
-        ```
+    ```
     
     ## Example Response Format:
     ```        
-     - Here is an example of the JSON object Format Response for your referrence.
-        ```
-        {{
-            "[parameter_1]": {{
-                "value": [value],
-                "remarks": "[remarks]"
-            }},
-            "[parameter_2]":": {{
-                "value": [value],
-                "remarks": "[remarks]"
-            }},
-            "[parameter_3]":": {{
-                "value": [value],
-                "remarks": "[remarks]"
-            }}
+    - Here is an example of the JSON object Format Response for your referrence.
+    ```
+    {{
+        "[parameter_1]": {{
+            "value": [value],
+            "remarks": "[remarks]"
+        }},
+        "[parameter_2]": {{
+            "value": [value],
+            "remarks": "[remarks]"
+        }},
+        "[parameter_3]": {{
+            "value": [value],
+            "remarks": "[remarks]"
         }}
-        ```
+    }}
+    ```
 
     Note: Do not include any extra content in the output.
     ```
@@ -433,95 +430,66 @@ def evaluate_with_ai(resume_text, job_description):
 
     **Candidate Resume:**  
     {resume_text}
-   
     """
     
-    messages = [{"role": "system", "content": prompt}]
-    
-    # API Call
-    response = client.chat.completions.create(
-        model="gpt-4o",  # Replace with the correct model
-        messages=messages,
-        temperature= 0.00001
-    )
+    # Call Gemini API
+    response_text = gemini_completion(prompt)
+    if not response_text:
+        raise ValueError("Empty response from Gemini API")
     
     # Debugging: Print the raw response content
-    raw_content = response.choices[0].message.content.strip()
-    print("Raw response content:", raw_content)  # Debugging line
+    print("Raw response content:", response_text)
     
-    # Sanitize the response
-    if raw_content.startswith("```json") and raw_content.endswith("```"):
-        raw_content = raw_content[8:-3].strip()
-    elif raw_content.startswith("```") and raw_content.endswith("```"):
-        raw_content = raw_content[3:-3].strip()
-    
-    # Parse JSON Response
-    try:
-        result = json.loads(raw_content)
-    except json.JSONDecodeError:
-        raise ValueError(
-            f"The response is not valid JSON. Raw content: {raw_content}"
-        )
+    # Parse the response
+    result = clean_and_parse_response(response_text)
     
     # Debugging: Print parsed JSON result
     print("Parsed Response:", result)
     
     return result
 
+# Updated function to convert job description to JSON
 def convert_jd_to_json(jd_text):
     prompt = f"""
-        You are tasked with converting a job description into a structured JSON format. Each parameter in the job description should be represented with:
-        - `criteria`: A concise summary of the requirement.
-        - `must_have`: The mandatory conditions or requirements (if it's not mandatory, return `NA`).
-        - `broader_context`: Detailed steps or logic to evaluate the criteria.
+    You are tasked with converting a job description into a structured JSON format. Each parameter in the job description should be represented with:
+    - `criteria`: A concise summary of the requirement.
+    - `must_have`: The mandatory conditions or requirements (if it's not mandatory, return `NA`).
+    - `broader_context`: Detailed steps or logic to evaluate the criteria.
 
-        **Important Notes:**
-        - If `Must Have` is mentioned as `NA`, include `"must_have": "NA"` in the JSON output.
-        - If `Broader Context` is not specified, return `"broader_context": "NA"`.
+    **Important Notes:**
+    - If `Must Have` is mentioned as `NA`, include `"must_have": "NA"` in the JSON output.
+    - If `Broader Context` is not specified, return `"broader_context": "NA"`.
 
-        Job Description:
-        {jd_text}
+    Job Description:
+    {jd_text}
 
-        Example Output:
-        {{
-            "age": {{
-                "criteria": "Age should be less than 30 (consider 31 if other parameters match).",
-                "must_have": "Age <30. If rest of the parameters match, we can consider 31.",
-                "broader_context": "1. Candidate will mention in Resume\n2. If DOB is not mentioned, calculate from the year of graduation\n3. If those two are not mentioned, calculate from the starting year of career\n4. Else give as 0"
-            }},
-            "native_language": {{
-                "criteria": "Native Language or Known Language: Marathi",
-                "must_have": "Must explicitly mention Marathi in resume.",
-                "broader_context": "1. Candidate will mention in Resume\n2. If not mentioned, infer based on candidate work locations or native location\n3. Else give as missing"
-            }}
+    Example Output:
+    {{
+        "age": {{
+            "criteria": "Age should be less than 30 (consider 31 if other parameters match).",
+            "must_have": "Age <30. If rest of the parameters match, we can consider 31.",
+            "broader_context": "1. Candidate will mention in Resume\n2. If DOB is not mentioned, calculate from the year of graduation\n3. If those two are not mentioned, calculate from the starting year of career\n4. Else give as 0"
+        }},
+        "native_language": {{
+            "criteria": "Native Language or Known Language: Marathi",
+            "must_have": "Must explicitly mention Marathi in resume.",
+            "broader_context": "1. Candidate will mention in Resume\n2. If not mentioned, infer based on candidate work locations or native location\n3. Else give as missing"
         }}
+    }}
 
-        Return the results strictly in the above JSON format without any additional text or explanations.
+    Return the results strictly in the above JSON format without any additional text or explanations.
     """
     
-    messages = [{"role": "system", "content": prompt}]
-    
-    response = client.chat.completions.create(
-        model="gpt-4o",  # Replace with the deployment name in Azure
-        messages=messages
-    )
+    # Call Gemini API
+    response_text = gemini_completion(prompt)
+    if not response_text:
+        raise ValueError("Empty response from Gemini API")
     
     # Debugging: Print the raw response content
-    raw_content = response.choices[0].message.content.strip()
+    print("Raw response content:", response_text)
     
-    # Sanitize the response
-    if raw_content.startswith("```json") and raw_content.endswith("```"):
-        raw_content = raw_content[8:-3].strip()
-    elif raw_content.startswith("```") and raw_content.endswith("```"):
-        raw_content = raw_content[3:-3].strip()
-    
-    # Parse the response to ensure it's valid JSON
-    try:
-        result = json.loads(raw_content)
-    except json.JSONDecodeError:
-        raise ValueError(
-            f"The response is not valid JSON. Raw content: {raw_content}"
-        )
+    # Parse the response
+    result = clean_and_parse_response(response_text)
     
     return result
 
@@ -529,23 +497,19 @@ jd_json = None
 
 # Streamlit app
 st.title("AI-Powered Resume Evaluator for Multiple Document Types")
-st.write("Upload a CSV file containing URLs of resumes (Drive, Docs, PDFs, PNGs) and provide the job description to evaluate multiple candidates. The column name should be **Resume Links.** ")
+st.write("Upload a CSV file containing URLs of resumes (Drive, Docs, PDFs, PNGs) and provide the job description to evaluate multiple candidates. The column name should be **Resume Links.**")
 
 # Job description input
 st.header("Step 1: Provide Job Description")
-job_description = st.text_area(
-    "Paste the job description in plain text:", height=300)
+job_description = st.text_area("Paste the job description in plain text:", height=300)
 
 if st.button("Convert to JSON"):
     if job_description:
         try:
-            # Debugging: Print the job description
             print("Job Description:", job_description)  # Debugging line
-
             jd_json = convert_jd_to_json(job_description)
             st.subheader("Job Description JSON")
             st.json(jd_json)
-            # Store in session state
             st.session_state.jd_json = jd_json
         except Exception as e:
             st.error(f"An error occurred during conversion: {e}")
@@ -554,8 +518,7 @@ if st.button("Convert to JSON"):
 
 # Upload CSV file
 st.header("Step 2: Upload CSV File")
-csv_file = st.file_uploader(
-    "Upload a CSV file containing URLs of resumes:", type=["csv"])
+csv_file = st.file_uploader("Upload a CSV file containing URLs of resumes:", type=["csv"])
 
 # Initialize Google API clients
 drive_service, docs_service = authenticate_google_api()
@@ -577,7 +540,6 @@ if st.button("Process Resumes"):
                 progress_bar = st.progress(0)
                 progress_text = st.empty()
 
-                # Get column_order from jd_json
                 column_order = list(jd_json.keys())
 
                 for index, row in df.iterrows():
@@ -588,45 +550,32 @@ if st.button("Process Resumes"):
                         result_table = json_to_table(result, resume_url, column_order)
                         results.append(result_table)
                     except Exception as resume_e:
-                        # Create a DataFrame with NA values for failed processing
                         error_data = {"Resume Link/Text": resume_url}
-                        
-                        # Add NA values for each column in column_order
                         for key in column_order:
                             error_data[f"{key} Value"] = "NA"
-                            error_data[f"{key} Remarks"] = str(resume_e)  # Add error message as remarks
-                        
-                        # Add Total Score as NA
+                            error_data[f"{key} Remarks"] = str(resume_e)
                         error_data["Total Score"] = "NA"
-                        
-                        # Create DataFrame with error data and append to results
                         error_df = pd.DataFrame([error_data])
                         results.append(error_df)
-                        
-                        # Also add to unsupported_resumes for separate tracking
                         unsupported_resumes.append({
                             "Resume Link/Text": resume_url,
                             "Reason": str(resume_e)
                         })
                     
-                    # Update progress
                     progress = (index + 1) / total_resumes
                     progress_bar.progress(progress)
                     progress_text.text(f"Processed: {index + 1}/{total_resumes}...")
 
-                # Combine all results into one DataFrame
                 if results:
                     final_results = pd.concat(results, ignore_index=True)
                     st.header("Evaluation Results (Including Failed Processes)")
                     st.dataframe(final_results)
-                
-                # Display unsupported resumes separately
+
                 if unsupported_resumes:
                     st.header("Failed Processing Details")
                     unsupported_df = pd.DataFrame(unsupported_resumes)
                     st.dataframe(unsupported_df)
 
-                # Summary statistics
                 processed_count = len(results) - len(unsupported_resumes)
                 unsupported_count = len(unsupported_resumes)
                 st.subheader(f"Successfully Processed Resumes: {processed_count}")
